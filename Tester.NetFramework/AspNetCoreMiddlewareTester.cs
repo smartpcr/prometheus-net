@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.AspNetCore.Hosting;
 using Prometheus;
 using System;
@@ -11,7 +12,7 @@ namespace tester
 {
     // Works ONLY on Tester.NetCore because Kestrel is a pain to get set up on NetFramework, so let's not bother.
     // You will get some libuv related error if you try to use Tester.NetFramework.
-    class AspNetCoreMiddlewareTester : Tester
+    internal class AspNetCoreMiddlewareTester : Tester
     {
         // Sinaled when it is time for the web server to stop.
         private readonly CancellationTokenSource _cts = new CancellationTokenSource();
@@ -24,6 +25,7 @@ namespace tester
                 WebHost.CreateDefaultBuilder()
                 .UseUrls($"http://localhost:{TesterConstants.TesterPort}")
                 .Configure(app => app.UseMetricServer())
+                .ConfigureLogging(logging => logging.ClearProviders())
                 .Build()
                 .RunAsync(_cts.Token);
         }

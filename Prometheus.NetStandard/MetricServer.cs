@@ -1,7 +1,4 @@
-﻿using Prometheus.Advanced;
-using Prometheus.Advanced.DataContracts;
-using System;
-using System.Collections.Generic;
+﻿using System;
 using System.Diagnostics;
 using System.IO;
 using System.Net;
@@ -12,16 +9,17 @@ namespace Prometheus
 {
     /// <summary>
     /// Implementation of a Prometheus exporter that serves metrics using HttpListener.
+    /// This is a stand-alone exporter for apps that do not already have an HTTP server included.
     /// </summary>
     public class MetricServer : MetricHandler
     {
         private readonly HttpListener _httpListener = new HttpListener();
 
-        public MetricServer(int port, string url = "metrics/", ICollectorRegistry registry = null, bool useHttps = false) : this("+", port, url, registry, useHttps)
+        public MetricServer(int port, string url = "metrics/", CollectorRegistry registry = null, bool useHttps = false) : this("+", port, url, registry, useHttps)
         {
         }
 
-        public MetricServer(string hostname, int port, string url = "metrics/", ICollectorRegistry registry = null, bool useHttps = false) : base(registry)
+        public MetricServer(string hostname, int port, string url = "metrics/", CollectorRegistry registry = null, bool useHttps = false) : base(registry)
         {
             var s = useHttps ? "s" : "";
             _httpListener.Prefixes.Add($"http{s}://{hostname}:{port}/{url}");
@@ -33,7 +31,7 @@ namespace Prometheus
             _httpListener.Start();
 
             // Kick off the actual processing to a new thread and return a Task for the processing thread.
-            return Task.Factory.StartNew(delegate
+            return Task.Factory.StartNew(async delegate
             {
                 try
                 {
@@ -48,14 +46,24 @@ namespace Prometheus
 
                         try
                         {
-                            IEnumerable<MetricFamily> metrics;
-
                             try
                             {
-                                metrics = _registry.CollectAll();
+                                // We first touch the response.OutputStream only in the callback because touching
+                                // it means we can no longer send headers (the status code).
+                                var serializer = new TextSerializer(delegate
+                                {
+                                    response.ContentType = PrometheusConstants.ExporterContentType;
+                                    response.StatusCode = 200;
+                                    return response.OutputStream;
+                                });
+
+                                await _registry.CollectAndSerializeAsync(serializer, cancel);
+                                response.OutputStream.Dispose();
                             }
                             catch (ScrapeFailedException ex)
                             {
+                                // This can only happen before anything is written to the stream, so it
+                                // should still be safe to update the status code and report an error.
                                 response.StatusCode = 503;
 
                                 if (!string.IsNullOrWhiteSpace(ex.Message))
@@ -63,19 +71,7 @@ namespace Prometheus
                                     using (var writer = new StreamWriter(response.OutputStream))
                                         writer.Write(ex.Message);
                                 }
-
-                                continue;
                             }
-
-                            var acceptHeader = request.Headers.Get("Accept");
-                            var acceptHeaders = acceptHeader?.Split(',');
-                            var contentType = ScrapeHandler.GetContentType(acceptHeaders);
-                            response.ContentType = contentType;
-
-                            response.StatusCode = 200;
-
-                            using (var outputStream = response.OutputStream)
-                                ScrapeHandler.ProcessScrapeRequest(metrics, contentType, outputStream);
                         }
                         catch (Exception ex) when (!(ex is OperationCanceledException))
                         {

@@ -1,65 +1,37 @@
-﻿using Prometheus.Advanced;
-using Prometheus.Advanced.DataContracts;
+﻿using System.Threading;
+using System.Threading.Tasks;
 
 namespace Prometheus
 {
-    public interface IGauge
+    public sealed class Gauge : Collector<Gauge.Child>, IGauge
     {
-        void Inc(double increment = 1);
-        void Set(double val);
-        void Dec(double decrement = 1);
-        double Value { get; }
-    }
-
-    public class Gauge : Collector<Gauge.Child>, IGauge
-    {
-        internal Gauge(string name, string help, string[] labelNames, bool suppressInitialValue)
-            : base(name, help, labelNames, suppressInitialValue)
+        public sealed class Child : ChildBase, IGauge
         {
-        }
-
-        public class Timer
-        {
-            private System.Diagnostics.Stopwatch _stopwatch;
-            private IGauge _gauge;
-
-            public Timer(IGauge gauge)
+            internal Child(Collector parent, Labels labels, bool publish)
+                : base(parent, labels, publish)
             {
-                _gauge = gauge;
-                _stopwatch = System.Diagnostics.Stopwatch.StartNew();
+                _identifier = CreateIdentifier();
             }
 
-            public void ApplyDuration()
-            {
-                _gauge.Set(_stopwatch.Elapsed.TotalSeconds);
-            }
-        }
+            private readonly byte[] _identifier;
 
-        public class Child : Advanced.Child, IGauge
-        {
             private ThreadSafeDouble _value;
 
-            protected override void Populate(Metric metric)
+            private protected override Task CollectAndSerializeImplAsync(IMetricsSerializer serializer, CancellationToken cancel)
             {
-                metric.gauge = new Advanced.DataContracts.Gauge();
-                metric.gauge.value = Value;
+                return serializer.WriteMetricAsync(_identifier, Value, cancel);
             }
 
             public void Inc(double increment = 1)
             {
                 _value.Add(increment);
-                _publish = true;
+                Publish();
             }
 
             public void Set(double val)
             {
                 _value.Value = val;
-                _publish = true;
-            }
-            
-            public Gauge.Timer StartTimer()
-            {
-                return new Gauge.Timer(this);
+                Publish();
             }
 
             public void Dec(double decrement = 1)
@@ -70,7 +42,15 @@ namespace Prometheus
             public double Value => _value.Value;
         }
 
-        protected override MetricType Type => MetricType.GAUGE;
+        private protected override Child NewChild(Labels labels, bool publish)
+        {
+            return new Child(this, labels, publish);
+        }
+
+        internal Gauge(string name, string help, string[] labelNames, bool suppressInitialValue)
+            : base(name, help, labelNames, suppressInitialValue)
+        {
+        }
 
         public void Inc(double increment = 1) => Unlabelled.Inc(increment);
         public void Set(double val) => Unlabelled.Set(val);
@@ -78,5 +58,7 @@ namespace Prometheus
         public double Value => Unlabelled.Value;
 
         public void Publish() => Unlabelled.Publish();
+
+        private protected override MetricType Type => MetricType.Gauge;
     }
 }

@@ -1,7 +1,4 @@
 ﻿using Microsoft.AspNetCore.Http;
-using Prometheus.Advanced;
-using Prometheus.Advanced.DataContracts;
-using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 
@@ -18,17 +15,17 @@ namespace Prometheus
         {
             _next = next;
 
-            _registry = settings.Registry ?? DefaultCollectorRegistry.Instance;
+            _registry = settings.Registry ?? Metrics.DefaultRegistry;
         }
 
         public sealed class Settings
         {
-            public ICollectorRegistry Registry { get; set; }
+            public CollectorRegistry Registry { get; set; }
         }
 
         private readonly RequestDelegate _next;
 
-        private readonly ICollectorRegistry _registry;
+        private readonly CollectorRegistry _registry;
 
         public async Task Invoke(HttpContext context)
         {
@@ -42,33 +39,32 @@ namespace Prometheus
             var request = context.Request;
             var response = context.Response;
 
-            var acceptHeaders = request.Headers["Accept"];
-            var contentType = ScrapeHandler.GetContentType(acceptHeaders);
-            response.ContentType = contentType;
-
-            IEnumerable<MetricFamily> metrics;
-
             try
             {
-                metrics = _registry.CollectAll();
+                // We first touch the response.Body only in the callback because touching
+                // it means we can no longer send headers (the status code).
+                var serializer = new TextSerializer(delegate
+                {
+                    response.ContentType = PrometheusConstants.ExporterContentType;
+                    response.StatusCode = StatusCodes.Status200OK;
+                    return response.Body;
+                });
+
+                await _registry.CollectAndSerializeAsync(serializer, default);
+                response.Body.Dispose();
             }
             catch (ScrapeFailedException ex)
             {
-                response.StatusCode = 503;
+                // This can only happen before any serialization occurs, in the pre-collect callbacks.
+                // So it should still be safe to update the status code and write an error message.
+                response.StatusCode = StatusCodes.Status503ServiceUnavailable;
 
                 if (!string.IsNullOrWhiteSpace(ex.Message))
                 {
                     using (var writer = new StreamWriter(response.Body))
                         await writer.WriteAsync(ex.Message);
                 }
-
-                return;
             }
-
-            response.StatusCode = 200;
-
-            using (var outputStream = response.Body)
-                ScrapeHandler.ProcessScrapeRequest(metrics, contentType, outputStream);
         }
     }
 }
